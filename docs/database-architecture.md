@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document describes the initial relational foundation. It establishes ownership, calendar/availability records, roster structures, generation-run tracking, and audit records. It does not implement roster generation, conflict resolution, CRUD routes, or authentication.
+This document describes the relational foundation. It establishes ownership, calendar/availability records, roster structures, generation-run tracking, and audit records. Organization, Pod, Brand, and Process CRUD routes are implemented. Roster generation and conflict resolution are not.
 
 ## Entity relationships
 
@@ -78,4 +78,4 @@ The migration test upgrades a populated `0001` SQLite database, verifies the bac
 
 The ORM and migration use standard SQLAlchemy types and Psycopg's `postgresql+psycopg` dialect. PostgreSQL remains the deployment target. The migration and business-constraint suite currently run against SQLite only; PostgreSQL/Supabase compatibility has **not been verified by an actual PostgreSQL test**. Run the migration and constraints against a disposable PostgreSQL database before production deployment.
 
-No Row Level Security policies or authentication-to-tenant mapping are defined. The composite constraints protect relational ownership, but API authorization and tenant filtering remain required before exposing data endpoints.
+No Row Level Security policies or authentication-to-tenant mapping are defined. The organization structure endpoints currently have no authentication or authorization and are for development use only. Composite constraints protect relational ownership, but do not replace API access control. Do not expose these endpoints to untrusted clients until authorization is implemented.

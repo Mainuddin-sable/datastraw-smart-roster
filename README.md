@@ -5,8 +5,8 @@ Initial application foundation for a roster management system. The repository co
 ## Project layout
 
 ```text
-app/                              Next.js frontend
-backend/app/                     FastAPI, SQLAlchemy models and Pydantic read schemas
+app/                             Next.js frontend
+backend/app/                     FastAPI routers, services, SQLAlchemy models and Pydantic schemas
 backend/alembic/                 schema migrations
 backend/tests/                   API, domain constraint and migration tests
 docs/database-architecture.md    domain relationships and database decisions
@@ -22,6 +22,12 @@ docs/database-architecture.md    domain relationships and database decisions
 
 If `DATABASE_URL` is unset, the backend uses `sqlite:///./smart_roster.db` relative to its working directory. SQLite foreign-key enforcement is enabled on application and migration connections. The API liveness endpoint is `GET /health`; it does not claim database readiness. Interactive API documentation is available at `/docs`.
 
+## Organization structure API
+
+The API supports create/list/get/update operations for Organizations, Pods, Brands, and Processes. Child resource routes are scoped under `/organizations/{organization_id}` so related lookups and writes verify organization ownership. Create requests return `201`; reads and updates return `200`; missing or cross-organization resources return `404`; duplicate Pod, Brand, or Process names return `409`; invalid request data returns `422`.
+
+Authentication and authorization are not implemented yet. These endpoints are for development use only and must not be exposed to untrusted clients until access control is added.
+
 ## Database foundation
 
 An Organization owns Pods. A Pod owns its Brands and Employees; each Process belongs to one Brand in the same Pod. Employees can have multiple effective-dated Process Assignments, including assignments across several brands and processes. Operating rules and their day/date/holiday overrides belong to Processes. Employee recurring availability, leave, comp-off grants, and preferences are separate employee records.
@@ -30,4 +36,4 @@ A Roster covers a Pod and a date period. It has one Roster Entry per employee an
 
 The full entity map, effective-date conventions, unique constraints, and known validation boundaries are in [docs/database-architecture.md](docs/database-architecture.md). The existing organization/shift assignment tables remain for compatibility. Migration `0002` backfills one `Default` Pod for each existing Organization and adds tenant-safe ownership columns to legacy assignments.
 
-The API currently provides liveness and Pydantic ORM read contracts; it does not expose CRUD endpoints or implement roster generation/scheduling. PostgreSQL is the deployment target, but no PostgreSQL integration run has been performed for this foundation.
+Organization structure CRUD is implemented. The API does not yet expose CRUD for roster, employee-availability, generation-run, or audit resources, and it does not implement roster generation/scheduling. PostgreSQL is the deployment target, but no PostgreSQL integration run has been performed for this foundation.

@@ -1,14 +1,56 @@
-"""Pydantic response contracts for the initial roster database domain."""
+"""Pydantic request and response contracts for roster and organization APIs."""
 
 from datetime import date, datetime, time
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 
 class OrmRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+
+
+Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
+
+
+class RequestModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class OrganizationCreate(RequestModel):
+    name: Name
+
+
+class OrganizationUpdate(RequestModel):
+    name: Name
+
+
+class PodCreate(RequestModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+
+
+class PodUpdate(PodCreate):
+    pass
+
+
+class BrandCreate(RequestModel):
+    pod_id: Annotated[int, Field(gt=0)]
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+
+
+class BrandUpdate(BrandCreate):
+    pass
+
+
+class ProcessCreate(RequestModel):
+    brand_id: Annotated[int, Field(gt=0)]
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=120)]
+    timezone: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)] = "UTC"
+
+
+class ProcessUpdate(ProcessCreate):
+    pass
 
 
 class EffectiveWindowRead(OrmRead):
@@ -25,6 +67,7 @@ class EffectiveWindowRead(OrmRead):
 class OrganizationRead(OrmRead):
     id: int
     name: str
+    created_at: datetime
 
 
 class PodRead(OrmRead):
