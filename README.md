@@ -32,6 +32,8 @@ Process operating calendars, organization holidays, date and weekday overrides, 
 
 Monthly roster generation is available at `POST /organizations/{organization_id}/rosters/generate`. It uses OR-Tools CP-SAT, requires a Pod and month, enforces process and brand staffing minima, employee process eligibility, explicit availability closures, approved leave, and non-overlapping work blocks. The request has a bounded solver time limit; infeasible runs are recorded and return uncovered staffing demands without saving a Roster.
 
+Saved rosters can be independently checked with `POST /organizations/{organization_id}/rosters/{roster_id}/validate` or `/revalidate` after availability or leave changes. Assignments can be edited with `PUT .../{roster_id}/assignments/{assignment_id}` and locked/unlocked with `PATCH .../{assignment_id}/lock`. To regenerate a month while preserving locked assignments, pass `preserve_locks_from_roster_id` to the generation endpoint. An invalid lock blocks regeneration and is never silently dropped. Authentication is not implemented; these endpoints remain development-stage APIs.
+
 ## Database foundation
 
 An Organization owns Pods. A Pod owns its Brands and Employees; each Process belongs to one Brand in the same Pod. Employees can have multiple effective-dated Process Assignments, including assignments across several brands and processes. Operating rules and their day/date/holiday overrides belong to Processes. Employee recurring availability, leave, comp-off grants, and preferences are separate employee records.

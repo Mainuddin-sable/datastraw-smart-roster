@@ -2,7 +2,7 @@ from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
-    CheckConstraint, Date, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, JSON,
+    Boolean, CheckConstraint, Date, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, JSON,
     String, UniqueConstraint, func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -98,6 +98,7 @@ class RosterWorkAssignment(Base):
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     work_label: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    is_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="0")
     roster_entry: Mapped[RosterEntry] = relationship(back_populates="work_assignments", foreign_keys=[roster_entry_id])
     process_assignment: Mapped["ProcessAssignment"] = relationship(foreign_keys=[process_assignment_id])
 

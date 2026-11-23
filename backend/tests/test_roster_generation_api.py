@@ -10,7 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.dependencies import get_db
 from app.db.base import Base
 from app.main import app
-from app.models import EmployeeLeave, GenerationRun, Roster, RosterEntry, RosterWorkAssignment
+from app.models import EmployeeAvailability, EmployeeLeave, GenerationRun, ProcessAssignment, Roster, RosterEntry, RosterWorkAssignment, StaffingRequirement
 
 
 @pytest.fixture
@@ -224,3 +224,168 @@ def test_monthly_generation_excludes_inactive_employees(environment) -> None:
 
     assert generated.status_code == 409
     assert generated.json()["status"] == "infeasible"
+
+
+def _generate(client, org, pod, *, process_id=None, preserve=None):
+    payload = {"pod_id": pod["id"], "year": 2026, "month": 4, "solver_time_limit_seconds": 5}
+    if process_id is not None:
+        payload["process_id"] = process_id
+    if preserve is not None:
+        payload["preserve_locks_from_roster_id"] = preserve
+    return client.post(f"/organizations/{org['id']}/rosters/generate", json=payload)
+
+
+def test_saved_roster_validation_reports_leave_and_weekly_off(environment) -> None:
+    client, engine = environment
+    org, pod, _, _, employees = setup_monthly_scope(client)
+    generated = _generate(client, org, pod).json()
+    with Session(engine) as session:
+        session.add(EmployeeLeave(
+            organization_id=org["id"], pod_id=pod["id"], employee_id=employees[0]["id"],
+            starts_at=datetime(2026, 4, 7, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 4, 8, 0, tzinfo=timezone.utc), leave_type="annual", status="approved",
+        ))
+        session.add(EmployeeAvailability(
+            organization_id=org["id"], pod_id=pod["id"], employee_id=employees[0]["id"],
+            day_of_week=6, sequence=1, is_available=False, effective_from=datetime(2026, 1, 1).date(),
+        ))
+        session.commit()
+    report = client.post(f"/organizations/{org['id']}/rosters/{generated['roster_id']}/revalidate")
+    assert report.status_code == 200
+    kinds = {row["conflict_type"] for row in report.json()["conflicts"]}
+    assert "approved_leave" in kinds
+    assert "weekly_off" in kinds
+    gaps = [row for row in report.json()["conflicts"] if row["conflict_type"] == "process_coverage_gap"]
+    assert gaps and gaps[0]["replacement_employee_ids"] == []
+
+
+def test_revalidation_suggests_only_an_available_eligible_replacement(environment) -> None:
+    client, engine = environment
+    org, pod, _, _, employees = setup_monthly_scope(client, employee_count=2)
+    generated = _generate(client, org, pod).json()
+    with Session(engine) as session:
+        scheduled = session.scalar(select(RosterWorkAssignment).join(RosterEntry).where(
+            RosterEntry.roster_id == generated["roster_id"], RosterEntry.work_date == datetime(2026, 4, 7).date()))
+        blocked_employee = scheduled.employee_id
+        replacement = next(person["id"] for person in employees if person["id"] != blocked_employee)
+        session.add(EmployeeLeave(
+            organization_id=org["id"], pod_id=pod["id"], employee_id=blocked_employee,
+            starts_at=datetime(2026, 4, 7, 0, tzinfo=timezone.utc),
+            ends_at=datetime(2026, 4, 8, 0, tzinfo=timezone.utc), leave_type="annual", status="approved",
+        ))
+        session.commit()
+    report = client.post(f"/organizations/{org['id']}/rosters/{generated['roster_id']}/revalidate").json()
+    coverage_gap = next(row for row in report["conflicts"]
+        if row["conflict_type"] == "process_coverage_gap" and row["work_date"] == "2026-04-07")
+    assert coverage_gap["replacement_employee_ids"] == [replacement]
+
+
+def test_validator_reports_brand_level_staffing_gap(environment) -> None:
+    client, engine = environment
+    org, pod, brand, _, _ = setup_monthly_scope(client)
+    generated = _generate(client, org, pod).json()
+    with Session(engine) as session:
+        session.add(StaffingRequirement(
+            organization_id=org["id"], pod_id=pod["id"], brand_id=brand["id"],
+            process_id=None, minimum_staff=2, effective_from=datetime(2026, 1, 1).date(),
+        ))
+        session.commit()
+    report = client.post(f"/organizations/{org['id']}/rosters/{generated['roster_id']}/validate").json()
+    assert any(row["conflict_type"] == "brand_coverage_gap" for row in report["conflicts"])
+
+
+def test_validator_detects_duplicate_overlapping_assignments(environment) -> None:
+    client, engine = environment
+    org, pod, _, process, employees = setup_monthly_scope(client)
+    roster_id = _generate(client, org, pod).json()["roster_id"]
+    with Session(engine) as session:
+        block = session.scalar(select(RosterWorkAssignment).join(RosterEntry).where(
+            RosterEntry.roster_id == roster_id, RosterEntry.work_date == datetime(2026, 4, 1).date()))
+        duplicate_pa = ProcessAssignment(
+            organization_id=org["id"], pod_id=pod["id"], employee_id=employees[0]["id"],
+            process_id=process["id"], effective_from=datetime(2026, 1, 2).date(),
+        )
+        session.add(duplicate_pa)
+        session.flush()
+        session.add(RosterWorkAssignment(
+            organization_id=org["id"], pod_id=pod["id"], roster_entry_id=block.roster_entry_id,
+            employee_id=block.employee_id, process_assignment_id=duplicate_pa.id,
+            starts_at=block.starts_at, ends_at=block.ends_at,
+        ))
+        session.commit()
+    report = client.post(f"/organizations/{org['id']}/rosters/{roster_id}/validate")
+    assert report.status_code == 200
+    assert any(row["conflict_type"] == "duplicate_assignment" for row in report.json()["conflicts"])
+
+
+def test_manual_edit_rejects_ineligible_employee_and_accepts_eligible_replacement(environment) -> None:
+    client, engine = environment
+    org, pod, _, process, employees = setup_monthly_scope(client, employee_count=2)
+    generated = _generate(client, org, pod).json()
+    with Session(engine) as session:
+        block = session.scalar(select(RosterWorkAssignment).join(RosterEntry).where(
+            RosterEntry.roster_id == generated["roster_id"]))
+    target_pa = client.get(
+        f"/organizations/{org['id']}/employees/{employees[1]['id']}/process-assignments"
+    ).json()[0]
+    base = f"/organizations/{org['id']}/rosters/{generated['roster_id']}/assignments/{block.id}"
+    invalid = client.put(base, json={"employee_id": employees[1]["id"], "process_assignment_id": 99999})
+    assert invalid.status_code == 409
+    valid = client.put(base, json={"employee_id": employees[1]["id"], "process_assignment_id": target_pa["id"]})
+    assert valid.status_code == 200
+    with Session(engine) as session:
+        updated = session.get(RosterWorkAssignment, block.id)
+        assert updated.employee_id == employees[1]["id"]
+
+
+def test_locked_assignment_survives_regeneration_as_locked(environment) -> None:
+    client, engine = environment
+    org, pod, _, _, employees = setup_monthly_scope(client, employee_count=2)
+    first = _generate(client, org, pod).json()
+    with Session(engine) as session:
+        block = session.scalar(select(RosterWorkAssignment).join(RosterEntry).where(
+            RosterEntry.roster_id == first["roster_id"]))
+        block_id = block.id
+        employee_id = block.employee_id
+        work_date = session.get(RosterEntry, block.roster_entry_id).work_date
+    locked = client.patch(
+        f"/organizations/{org['id']}/rosters/{first['roster_id']}/assignments/{block_id}/lock",
+        json={"is_locked": True},
+    )
+    assert locked.status_code == 200 and locked.json()["is_locked"] is True
+    regenerated = _generate(client, org, pod, preserve=first["roster_id"])
+    assert regenerated.status_code == 201
+    result = regenerated.json()
+    with Session(engine) as session:
+        preserved = session.scalar(select(RosterWorkAssignment).join(RosterEntry).where(
+            RosterEntry.roster_id == result["roster_id"], RosterWorkAssignment.employee_id == employee_id,
+            RosterEntry.work_date == work_date, RosterWorkAssignment.is_locked.is_(True)))
+        assert preserved is not None
+
+
+def test_unavailable_manual_lock_blocks_regeneration_and_reports_unresolved_gap(environment) -> None:
+    client, engine = environment
+    org, pod, _, _, employees = setup_monthly_scope(client, employee_count=2)
+    first = _generate(client, org, pod).json()
+    with Session(engine) as session:
+        block = session.scalar(select(RosterWorkAssignment).join(RosterEntry).where(
+            RosterEntry.roster_id == first["roster_id"]))
+        employee_id = block.employee_id
+        assignment_id = block.id
+        day = session.get(RosterEntry, block.roster_entry_id).work_date
+    locked = client.patch(
+        f"/organizations/{org['id']}/rosters/{first['roster_id']}/assignments/{assignment_id}/lock",
+        json={"is_locked": True},
+    )
+    assert locked.status_code == 200
+    unavailable = client.post(
+        f"/organizations/{org['id']}/employees/{employee_id}/availability",
+        json={"day_of_week": day.weekday(), "sequence": 1, "is_available": False, "effective_from": "2026-01-01"},
+    )
+    assert unavailable.status_code == 201
+    revalidation = client.post(f"/organizations/{org['id']}/rosters/{first['roster_id']}/revalidate").json()
+    assert any(row["conflict_type"] == "weekly_off" for row in revalidation["conflicts"])
+    regenerated = _generate(client, org, pod, preserve=first["roster_id"])
+    assert regenerated.status_code == 409
+    assert regenerated.json()["unresolved_conflicts"]
+    assert any(row["work_date"] == day.isoformat() for row in regenerated.json()["unresolved_conflicts"])

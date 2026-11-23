@@ -11,6 +11,7 @@ class EligibleCandidate:
     employee_id: int
     process_assignment_id: int
     preference_cost: int = 0
+    locked: bool = False
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ class ScheduledBlock:
     work_date: date
     starts_at: datetime
     ends_at: datetime
+    locked: bool = False
 
 
 @dataclass(frozen=True)
@@ -107,6 +109,8 @@ def _build_and_solve(problem: MonthlyProblem, limit: float, soften_demands: bool
                 continue
             selected = model.new_bool_var(f"assign_{slot.slot_id}_{candidate.employee_id}")
             assignments[key] = selected
+            if candidate.locked:
+                model.add(selected == 1)
             slot_candidates[slot.slot_id].append(selected)
             interval = model.new_optional_interval_var(
                 start, duration, end, selected, f"interval_{slot.slot_id}_{candidate.employee_id}"
@@ -237,6 +241,7 @@ def solve_monthly_roster(
                 work_date=slot.work_date,
                 starts_at=slot.starts_at,
                 ends_at=slot.ends_at,
+                locked=candidate.locked,
             ))
         return MonthlySolution(
             status="feasible",

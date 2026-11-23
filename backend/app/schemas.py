@@ -283,6 +283,7 @@ class GenerateMonthlyRosterRequest(RequestModel):
     month: Annotated[int, Field(ge=1, le=12)]
     process_id: Annotated[int, Field(gt=0)] | None = None
     solver_time_limit_seconds: Annotated[int, Field(ge=1, le=60)] = 30
+    preserve_locks_from_roster_id: Annotated[int, Field(gt=0)] | None = None
 
 
 class GeneratedAssignmentRead(OrmRead):
@@ -535,6 +536,35 @@ class RosterWorkAssignmentRead(OrmRead):
     starts_at: datetime
     ends_at: datetime
     work_label: str | None = None
+    is_locked: bool = False
+
+
+class RosterAssignmentEdit(RequestModel):
+    employee_id: Annotated[int, Field(gt=0)]
+    process_assignment_id: Annotated[int, Field(gt=0)]
+
+
+class RosterAssignmentLock(RequestModel):
+    is_locked: bool
+
+
+class RosterConflictRead(OrmRead):
+    conflict_type: str
+    work_date: date
+    employee_ids: list[int] = Field(default_factory=list)
+    brand_id: int | None = None
+    process_id: int | None = None
+    severity: str
+    message: str
+    assignment_ids: list[int] = Field(default_factory=list)
+    replacement_employee_ids: list[int] = Field(default_factory=list)
+
+
+class RosterValidationRead(OrmRead):
+    roster_id: int
+    valid: bool
+    conflict_count: int
+    conflicts: list[RosterConflictRead] = Field(default_factory=list)
 
 
 class GenerationRunRead(OrmRead):

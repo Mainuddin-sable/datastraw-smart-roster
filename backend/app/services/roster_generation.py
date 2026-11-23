@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     Employee,
@@ -36,6 +36,12 @@ from app.services.organization_structure import ResourceNotFound
 
 class RosterGenerationError(Exception):
     pass
+
+
+class LockedAssignmentConflict(ValueError):
+    def __init__(self, report: dict):
+        self.report = report
+        super().__init__("Locked assignments conflict with current hard constraints; unresolved gaps are included.")
 
 
 def _month_bounds(year: int, month: int) -> tuple[date, date]:
@@ -172,6 +178,7 @@ def _make_problem(
     start_date: date,
     end_date: date,
     requested_process_id: int | None,
+    locked_assignments: list[RosterWorkAssignment] | None = None,
 ) -> tuple[MonthlyProblem, list[Employee], dict[int, Process], list[EmployeeLeave]]:
     employees = list(session.scalars(select(Employee).where(
         Employee.organization_id == organization_id,
@@ -264,6 +271,26 @@ def _make_problem(
                     process_assignment_id=process_assignment.id,
                     preference_cost=_preference_cost(preferences, employee.id, process.id, work_date),
                 )
+            for locked in locked_assignments or []:
+                locked_entry = locked.roster_entry
+                if locked.employee_id not in employee_ids or locked_entry.work_date != work_date:
+                    continue
+                locked_pa = locked.process_assignment
+                if locked_pa.process_id != process.id:
+                    continue
+                if _as_utc(locked.starts_at) != starts_at or _as_utc(locked.ends_at) != ends_at:
+                    raise RosterGenerationError(
+                        f"Locked assignment {locked.id} no longer matches its Process operating interval."
+                    )
+                if not any(row.id == locked.process_assignment_id for row in eligible_rows_for(
+                    assignment_by_employee_process, locked.employee_id, process.id, work_date
+                )):
+                    raise RosterGenerationError(f"Locked assignment {locked.id} is no longer process eligible.")
+                candidates[locked.employee_id] = EligibleCandidate(
+                    employee_id=locked.employee_id,
+                    process_assignment_id=locked.process_assignment_id,
+                    locked=True,
+                )
             slots.append(WorkSlot(
                 slot_id=f"p{process.id}-{work_date.isoformat()}-s{effective['sequence']}",
                 work_date=work_date,
@@ -332,6 +359,11 @@ def _serialize_coverage(coverage) -> list[dict]:
     ]
 
 
+def eligible_rows_for(rows_by_key, employee_id: int, process_id: int, work_date: date):
+    return [row for row in rows_by_key.get((employee_id, process_id), [])
+        if row.effective_from <= work_date and (row.effective_to is None or row.effective_to >= work_date)]
+
+
 def generate_monthly_roster(
     session: Session,
     organization_id: int,
@@ -340,6 +372,7 @@ def generate_monthly_roster(
     month: int,
     process_id: int | None = None,
     time_limit_seconds: int = 30,
+    preserve_locks_from_roster_id: int | None = None,
 ) -> dict:
     start_date, end_date = _month_bounds(year, month)
     pod = session.scalar(select(Pod).where(Pod.id == pod_id, Pod.organization_id == organization_id))
@@ -353,6 +386,40 @@ def generate_monthly_roster(
         ))
         if process is None:
             raise ResourceNotFound("Process not found in this organization and pod.")
+
+    locked_assignments: list[RosterWorkAssignment] = []
+    if preserve_locks_from_roster_id is not None:
+        from app.services.roster_validation import validate_roster
+        source_roster = session.scalar(select(Roster).where(
+            Roster.id == preserve_locks_from_roster_id,
+            Roster.organization_id == organization_id,
+            Roster.pod_id == pod_id,
+            Roster.period_start == start_date,
+            Roster.period_end == end_date,
+        ).options(selectinload(Roster.entries).selectinload(RosterEntry.work_assignments)))
+        if source_roster is None:
+            raise ResourceNotFound("Source roster not found for this organization, Pod and month.")
+        locked_assignments = [assignment for entry in source_roster.entries for assignment in entry.work_assignments
+            if assignment.is_locked and (process_id is None or assignment.process_assignment.process_id == process_id)]
+        validation = validate_roster(session, organization_id, source_roster.id)
+        locked_ids = {row.id for row in locked_assignments}
+        locked_keys = {
+            (row.roster_entry.work_date, row.process_assignment.process_id, row.process_assignment.process.brand_id)
+            for row in locked_assignments
+        }
+        lock_conflicts = [row for row in validation["conflicts"] if
+            locked_ids.intersection(row["assignment_ids"])
+            or (row["conflict_type"] == "process_coverage_gap" and
+                any(row["work_date"] == day and row["process_id"] == pid for day, pid, _ in locked_keys))
+            or (row["conflict_type"] == "brand_coverage_gap" and
+                any(row["work_date"] == day and row["brand_id"] == bid for day, _, bid in locked_keys))]
+        if lock_conflicts:
+            raise LockedAssignmentConflict({
+                "roster_id": source_roster.id,
+                "valid": False,
+                "conflict_count": len(lock_conflicts),
+                "conflicts": lock_conflicts,
+            })
 
     parameters = {
         "year": year,
@@ -398,7 +465,7 @@ def generate_monthly_roster(
     try:
         try:
             problem, employees, process_by_id, leaves = _make_problem(
-                session, organization_id, pod_id, start_date, end_date, process_id
+                session, organization_id, pod_id, start_date, end_date, process_id, locked_assignments
             )
         except RosterGenerationError as exc:
             return fail("failed", "INVALID_CONFIGURATION", str(exc))
@@ -466,6 +533,7 @@ def generate_monthly_roster(
                     starts_at=block.starts_at,
                     ends_at=block.ends_at,
                     work_label=process.name,
+                    is_locked=block.locked,
                 ))
         assignments_out = []
         for block in solution.blocks:
