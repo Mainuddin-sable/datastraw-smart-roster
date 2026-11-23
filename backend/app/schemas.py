@@ -287,6 +287,7 @@ class GenerateMonthlyRosterRequest(RequestModel):
 
 
 class GeneratedAssignmentRead(OrmRead):
+    assignment_id: int
     employee_id: int
     employee_name: str
     process_id: int
@@ -297,6 +298,7 @@ class GeneratedAssignmentRead(OrmRead):
     work_date: date
     starts_at: datetime
     ends_at: datetime
+    is_locked: bool = False
 
 
 class GeneratedEmployeeStatusRead(OrmRead):
@@ -322,6 +324,7 @@ class MonthlyRosterGenerationRead(OrmRead):
     success: bool
     generation_run_id: int
     roster_id: int | None = None
+    roster_version: int | None = None
     status: str
     solver_status: str
     year: int

@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -18,6 +18,21 @@ from app.services.roster_generation import LockedAssignmentConflict
 router = APIRouter(prefix="/organizations/{organization_id}/rosters", tags=["roster generation"])
 DbSession = Annotated[Session, Depends(get_db)]
 OrgId = Annotated[int, Path(gt=0)]
+
+
+@router.get("/lookup", response_model=MonthlyRosterGenerationRead, responses={404: {"description": "No roster exists for this Pod and month"}})
+def get_latest_roster(
+    organization_id: OrgId,
+    db: DbSession,
+    pod_id: Annotated[int, Query(gt=0)],
+    year: Annotated[int, Query(ge=2000, le=2200)],
+    month: Annotated[int, Query(ge=1, le=12)],
+):
+    """Retrieve the latest saved roster version for a Pod and calendar month."""
+    result = service.get_latest_monthly_roster(db, organization_id, pod_id, year, month)
+    if result is None:
+        raise HTTPException(status_code=404, detail="No roster exists for this Pod and month.")
+    return result
 
 
 @router.post(

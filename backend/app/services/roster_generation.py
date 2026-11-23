@@ -359,6 +359,76 @@ def _serialize_coverage(coverage) -> list[dict]:
     ]
 
 
+def get_latest_monthly_roster(session: Session, organization_id: int, pod_id: int, year: int, month: int) -> dict | None:
+    """Read the latest persisted roster snapshot for one organization Pod/month."""
+    start_date, end_date = _month_bounds(year, month)
+    roster = session.scalar(select(Roster).where(
+        Roster.organization_id == organization_id,
+        Roster.pod_id == pod_id,
+        Roster.period_start == start_date,
+        Roster.period_end == end_date,
+    ).order_by(Roster.version.desc()).limit(1).options(
+        selectinload(Roster.entries).selectinload(RosterEntry.work_assignments)
+        .selectinload(RosterWorkAssignment.process_assignment).selectinload(ProcessAssignment.process)
+        .selectinload(Process.brand),
+    ))
+    if roster is None:
+        return None
+    run = session.scalar(select(GenerationRun).where(
+        GenerationRun.roster_id == roster.id,
+        GenerationRun.organization_id == organization_id,
+    ).order_by(GenerationRun.created_at.desc(), GenerationRun.id.desc()).limit(1))
+    employee_ids = {entry.employee_id for entry in roster.entries}
+    employee_by_id = {row.id: row for row in session.scalars(select(Employee).where(
+        Employee.organization_id == organization_id,
+        Employee.id.in_(employee_ids) if employee_ids else False,
+    ))}
+    assignments = []
+    statuses = []
+    for entry in roster.entries:
+        employee = employee_by_id.get(entry.employee_id)
+        if employee is None:
+            continue
+        statuses.append({
+            "employee_id": employee.id,
+            "employee_name": employee.full_name,
+            "work_date": entry.work_date,
+            "status": entry.status,
+        })
+        for block in entry.work_assignments:
+            process = block.process_assignment.process
+            assignments.append({
+                "assignment_id": block.id,
+                "employee_id": employee.id,
+                "employee_name": employee.full_name,
+                "process_id": process.id,
+                "process_name": process.name,
+                "brand_id": process.brand_id,
+                "brand_name": process.brand.name,
+                "process_assignment_id": block.process_assignment_id,
+                "work_date": entry.work_date,
+                "starts_at": block.starts_at,
+                "ends_at": block.ends_at,
+                "is_locked": block.is_locked,
+            })
+    summary = run.result_summary if run and isinstance(run.result_summary, dict) else {}
+    return {
+        "success": True,
+        "generation_run_id": run.id if run else 0,
+        "roster_id": roster.id,
+        "roster_version": roster.version,
+        "status": run.status if run else roster.status,
+        "solver_status": summary.get("solver_status", "PERSISTED"),
+        "year": year,
+        "month": month,
+        "pod_id": pod_id,
+        "assignments": sorted(assignments, key=lambda row: (row["work_date"], row["starts_at"], row["employee_id"])),
+        "employee_statuses": sorted(statuses, key=lambda row: (row["work_date"], row["employee_id"])),
+        "coverage": summary.get("coverage", []),
+        "error": run.error_summary if run else None,
+    }
+
+
 def eligible_rows_for(rows_by_key, employee_id: int, process_id: int, work_date: date):
     return [row for row in rows_by_key.get((employee_id, process_id), [])
         if row.effective_from <= work_date and (row.effective_to is None or row.effective_to >= work_date)]
@@ -451,6 +521,7 @@ def generate_monthly_roster(
             "success": False,
             "generation_run_id": run.id,
             "roster_id": None,
+            "roster_version": None,
             "status": status,
             "solver_status": solver_status,
             "year": year,
@@ -520,11 +591,12 @@ def generate_monthly_roster(
                 session.add(entry)
                 entry_by_employee_date[(employee.id, work_date)] = entry
         session.flush()
+        assignment_records = []
         for (employee_id, work_date), blocks in blocks_by_employee_date.items():
             entry = entry_by_employee_date[(employee_id, work_date)]
             for block in blocks:
                 process = process_by_id[block.process_id]
-                session.add(RosterWorkAssignment(
+                assignment_record = RosterWorkAssignment(
                     organization_id=organization_id,
                     pod_id=pod_id,
                     roster_entry_id=entry.id,
@@ -534,11 +606,15 @@ def generate_monthly_roster(
                     ends_at=block.ends_at,
                     work_label=process.name,
                     is_locked=block.locked,
-                ))
+                )
+                session.add(assignment_record)
+                assignment_records.append((block, assignment_record))
+        session.flush()
         assignments_out = []
-        for block in solution.blocks:
+        for block, assignment_record in assignment_records:
             process = process_by_id[block.process_id]
             assignments_out.append({
+                "assignment_id": assignment_record.id,
                 "employee_id": block.employee_id,
                 "employee_name": employee_by_id[block.employee_id].full_name,
                 "process_id": process.id,
@@ -549,6 +625,7 @@ def generate_monthly_roster(
                 "work_date": block.work_date,
                 "starts_at": block.starts_at,
                 "ends_at": block.ends_at,
+                "is_locked": block.locked,
             })
         statuses = [
             {
@@ -575,6 +652,7 @@ def generate_monthly_roster(
             "success": True,
             "generation_run_id": run.id,
             "roster_id": roster.id,
+            "roster_version": roster.version,
             "status": "succeeded",
             "solver_status": solution.solver_status,
             "year": year,

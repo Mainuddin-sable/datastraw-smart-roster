@@ -32,6 +32,8 @@ Process operating calendars, organization holidays, date and weekday overrides, 
 
 Monthly roster generation is available at `POST /organizations/{organization_id}/rosters/generate`. It uses OR-Tools CP-SAT, requires a Pod and month, enforces process and brand staffing minima, employee process eligibility, explicit availability closures, approved leave, and non-overlapping work blocks. The request has a bounded solver time limit; infeasible runs are recorded and return uncovered staffing demands without saving a Roster.
 
+The latest saved roster for a Pod/month can be retrieved with `GET /organizations/{organization_id}/rosters/lookup?pod_id=...&year=...&month=...`. It returns persisted assignment IDs, employee-day statuses, lock state, and stored generation coverage.
+
 Saved rosters can be independently checked with `POST /organizations/{organization_id}/rosters/{roster_id}/validate` or `/revalidate` after availability or leave changes. Assignments can be edited with `PUT .../{roster_id}/assignments/{assignment_id}` and locked/unlocked with `PATCH .../{assignment_id}/lock`. To regenerate a month while preserving locked assignments, pass `preserve_locks_from_roster_id` to the generation endpoint. An invalid lock blocks regeneration and is never silently dropped. Authentication is not implemented; these endpoints remain development-stage APIs.
 
 ## Database foundation
@@ -42,4 +44,4 @@ A Roster covers a Pod and a date period. It has one Roster Entry per employee an
 
 The full entity map, effective-date conventions, unique constraints, and known validation boundaries are in [docs/database-architecture.md](docs/database-architecture.md). The existing organization/shift assignment tables remain for compatibility. Migration `0002` backfills one `Default` Pod for each existing Organization and adds tenant-safe ownership columns to legacy assignments.
 
-Organization structure CRUD is implemented. The API does not yet expose CRUD for roster, employee-availability, generation-run, or audit resources, and it does not implement roster generation/scheduling. PostgreSQL is the deployment target, but no PostgreSQL integration run has been performed for this foundation.
+Organization structure, employee, calendar, staffing, availability, roster generation, validation, manual assignment editing, and lock APIs are implemented. Leave creation and comp-off request workflows are not exposed through the API. Authentication is not implemented, so API access is currently development-only. PostgreSQL is the deployment target, but no PostgreSQL integration run has been performed.

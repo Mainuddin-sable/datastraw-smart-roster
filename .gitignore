@@ -5,6 +5,9 @@ out/
 build/
 dist/
 coverage/
+playwright-report/
+test-results/
+debug.log
 *.sqlite
 *.sqlite3
 .env

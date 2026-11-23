@@ -108,6 +108,13 @@ def test_monthly_generation_uses_cp_sat_and_persists_roster_graph(environment) -
     assert all(row["status"] == "working" for row in result["employee_statuses"])
     assert all(row["uncovered"] == 0 for row in result["coverage"])
     assert all(row["process_id"] == process["id"] and row["brand_id"] == brand["id"] for row in result["assignments"])
+    persisted = client.get(
+        f"/organizations/{org['id']}/rosters/lookup",
+        params={"pod_id": pod["id"], "year": 2026, "month": 4},
+    )
+    assert persisted.status_code == 200
+    assert persisted.json()["roster_id"] == result["roster_id"]
+    assert persisted.json()["assignments"][0]["assignment_id"] == result["assignments"][0]["assignment_id"]
 
     with Session(engine) as session:
         roster = session.get(Roster, result["roster_id"])
