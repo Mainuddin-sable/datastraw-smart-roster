@@ -2,9 +2,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routers import brands, employees, organizations, pods, processes
+from app.api.routers import brands, calendars, employees, organizations, pods, processes, staffing
 from app.core.config import get_settings
 from app.services.employees import InvalidRelationship
+from app.services.calendars import InvalidCalendarInput
 from app.services.organization_structure import ResourceConflict, ResourceNotFound
 
 settings = get_settings()
@@ -40,11 +41,18 @@ async def invalid_relationship_handler(request: Request, exc: InvalidRelationshi
     return JSONResponse(status_code=422, content={"detail": str(exc)})
 
 
+@app.exception_handler(InvalidCalendarInput)
+async def invalid_calendar_input_handler(request: Request, exc: InvalidCalendarInput) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
 app.include_router(organizations.router)
 app.include_router(pods.router)
 app.include_router(brands.router)
 app.include_router(processes.router)
 app.include_router(employees.router)
+app.include_router(calendars.router)
+app.include_router(staffing.router)
 
 
 @app.get("/health", tags=["health"])

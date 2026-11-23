@@ -21,3 +21,4 @@ class Brand(Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     pod: Mapped["Pod"] = relationship(back_populates="brands", foreign_keys=[pod_id])
     processes: Mapped[list["Process"]] = relationship(back_populates="brand", cascade="all, delete-orphan", foreign_keys="Process.brand_id")
+    staffing_requirements: Mapped[list["StaffingRequirement"]] = relationship(back_populates="brand", foreign_keys="StaffingRequirement.brand_id")

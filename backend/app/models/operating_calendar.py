@@ -119,7 +119,7 @@ class Holiday(Base):
     __tablename__ = "holidays"
     __table_args__ = (
         UniqueConstraint("id", "organization_id", name="uq_holidays_id_organization"),
-        UniqueConstraint("organization_id", "holiday_date", "name", name="uq_holiday_org_date_name"),
+        UniqueConstraint("organization_id", "holiday_date", name="uq_holiday_org_date"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

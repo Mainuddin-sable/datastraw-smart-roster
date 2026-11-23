@@ -8,6 +8,7 @@ from app.models.organization import Organization
 from app.models.pod import Pod
 from app.models.process import Process
 from app.models.process_assignment import ProcessAssignment
+from app.models.staffing_requirement import StaffingRequirement
 from app.models.roster import GenerationRun, Roster, RosterEntry, RosterWorkAssignment
 from app.models.shift import Shift
 
@@ -16,4 +17,5 @@ __all__ = [
     "EmployeeAvailability", "EmployeeCompOff", "EmployeeLeave", "EmployeePreference",
     "GenerationRun", "Holiday", "HolidayOverride", "OperatingRule", "Organization", "Pod",
     "Process", "ProcessAssignment", "Roster", "RosterEntry", "RosterWorkAssignment", "Shift",
+    "StaffingRequirement",
 ]

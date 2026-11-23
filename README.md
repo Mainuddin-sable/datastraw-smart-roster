@@ -28,6 +28,8 @@ The API supports create/list/get/update operations for Organizations, Pods, Bran
 
 Authentication and authorization are not implemented yet. These endpoints are for development use only and must not be exposed to untrusted clients until access control is added.
 
+Process operating calendars, organization holidays, date and weekday overrides, and Brand/Process minimum staffing requirements are also exposed through FastAPI. Calendar effective-day reads apply date overrides, holiday behavior, weekday overrides, and recurring rules in that order; holidays close Processes by default. Public holiday data is supplied by API clients and is not bundled into the application.
+
 ## Database foundation
 
 An Organization owns Pods. A Pod owns its Brands and Employees; each Process belongs to one Brand in the same Pod. Employees can have multiple effective-dated Process Assignments, including assignments across several brands and processes. Operating rules and their day/date/holiday overrides belong to Processes. Employee recurring availability, leave, comp-off grants, and preferences are separate employee records.

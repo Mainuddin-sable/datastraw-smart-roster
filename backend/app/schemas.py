@@ -138,6 +138,163 @@ class EmployeeAvailabilityRange(RequestModel):
         return self
 
 
+class OperatingRuleInput(RequestModel):
+    day_of_week: Annotated[int, Field(ge=0, le=6)]
+    sequence: Annotated[int, Field(ge=1)] = 1
+    is_open: bool = True
+    opens_at: time | None = None
+    closes_at: time | None = None
+    effective_from: date
+    effective_to: date | None = None
+
+    @model_validator(mode="after")
+    def validate_rule(self):
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to must be on or after effective_from")
+        if self.is_open:
+            if self.opens_at is None or self.closes_at is None or self.opens_at == self.closes_at:
+                raise ValueError("open rules require distinct opens_at and closes_at values")
+        elif self.opens_at is not None or self.closes_at is not None:
+            raise ValueError("closed rules cannot include operating hours")
+        return self
+
+
+class ProcessCalendarUpdate(RequestModel):
+    timezone: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+    rules: list[OperatingRuleInput]
+
+    @model_validator(mode="after")
+    def validate_calendar_rule_windows(self):
+        for index, rule in enumerate(self.rules):
+            for other in self.rules[index + 1 :]:
+                if (rule.day_of_week, rule.sequence) != (other.day_of_week, other.sequence):
+                    continue
+                if rule.effective_from == other.effective_from:
+                    raise ValueError("calendar rules must have unique weekday, sequence and start date")
+                if rule.effective_to is None or other.effective_from <= rule.effective_to:
+                    if other.effective_to is None or rule.effective_from <= other.effective_to:
+                        raise ValueError("calendar rule effective date windows must not overlap")
+        return self
+
+    @model_validator(mode="after")
+    def validate_rule_windows(self):
+        for index, rule in enumerate(self.rules):
+            for other in self.rules[index + 1 :]:
+                if (rule.day_of_week, rule.sequence) != (other.day_of_week, other.sequence):
+                    continue
+                if rule.effective_from == other.effective_from:
+                    raise ValueError("calendar rules must have unique weekday, sequence and start date")
+                if rule.effective_to is None or other.effective_from <= rule.effective_to:
+                    if other.effective_to is None or rule.effective_from <= other.effective_to:
+                        raise ValueError("calendar rule effective date windows must not overlap")
+        return self
+
+
+class DayOverrideInput(OperatingRuleInput):
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, max_length=240)] | None = None
+
+
+class DateOverrideInput(RequestModel):
+    override_date: date
+    sequence: Annotated[int, Field(ge=1)] = 1
+    is_open: bool
+    opens_at: time | None = None
+    closes_at: time | None = None
+    reason: Annotated[str, StringConstraints(strip_whitespace=True, max_length=240)] | None = None
+
+    @model_validator(mode="after")
+    def validate_override(self):
+        if self.is_open:
+            if self.opens_at is None or self.closes_at is None or self.opens_at == self.closes_at:
+                raise ValueError("open overrides require distinct opens_at and closes_at values")
+        elif self.opens_at is not None or self.closes_at is not None:
+            raise ValueError("closed overrides cannot include operating hours")
+        return self
+
+
+class EffectiveOperatingDay(OrmRead):
+    operating_date: date
+    is_holiday: bool
+    source: str
+    is_open: bool
+    sequence: int
+    opens_at: time | None = None
+    closes_at: time | None = None
+    reason: str | None = None
+
+
+class HolidayCreate(RequestModel):
+    holiday_date: date
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
+    region: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] | None = None
+
+
+class HolidayUpdate(HolidayCreate):
+    pass
+
+
+class HolidayOverrideInput(RequestModel):
+    holiday_id: Annotated[int, Field(gt=0)]
+    sequence: Annotated[int, Field(ge=1)] = 1
+    is_open: bool
+    opens_at: time | None = None
+    closes_at: time | None = None
+
+    @model_validator(mode="after")
+    def validate_override(self):
+        if self.is_open:
+            if self.opens_at is None or self.closes_at is None or self.opens_at == self.closes_at:
+                raise ValueError("open overrides require distinct opens_at and closes_at values")
+        elif self.opens_at is not None or self.closes_at is not None:
+            raise ValueError("closed overrides cannot include operating hours")
+        return self
+
+
+class StaffingRequirementInput(RequestModel):
+    brand_id: Annotated[int, Field(gt=0)]
+    process_id: Annotated[int, Field(gt=0)] | None = None
+    day_of_week: Annotated[int, Field(ge=0, le=6)] | None = None
+    override_date: date | None = None
+    minimum_staff: Annotated[int, Field(ge=0)]
+    effective_from: date | None = None
+    effective_to: date | None = None
+
+    @model_validator(mode="after")
+    def validate_staffing_scope(self):
+        if self.override_date is not None:
+            if self.day_of_week is not None:
+                raise ValueError("date-specific overrides cannot set day_of_week")
+            if self.effective_from not in (None, self.override_date):
+                raise ValueError("effective_from must match override_date")
+            if self.effective_to not in (None, self.override_date):
+                raise ValueError("effective_to must match override_date")
+            self.effective_from = self.override_date
+            self.effective_to = self.override_date
+        elif self.effective_from is None:
+            raise ValueError("effective_from is required for non-date-specific requirements")
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to must be on or after effective_from")
+        return self
+
+
+class StaffingRequirementRead(OrmRead):
+    id: int
+    organization_id: int
+    pod_id: int
+    brand_id: int
+    process_id: int | None = None
+    day_of_week: int | None = None
+    override_date: date | None = None
+    minimum_staff: int
+    effective_from: date
+    effective_to: date | None = None
+
+
+class EffectiveStaffingRequirementRead(StaffingRequirementRead):
+    requested_date: date
+    scope: str
+
+
 class EffectiveWindowRead(OrmRead):
     effective_from: date
     effective_to: date | None = None
@@ -215,6 +372,8 @@ class OperatingRuleRead(EffectiveWindowRead):
 
 
 class DayOverrideRead(OperatingRuleRead):
+    organization_id: int
+    pod_id: int
     reason: str | None = None
 
 
@@ -245,6 +404,13 @@ class HolidayOverrideRead(OrmRead):
     is_open: bool
     opens_at: time | None = None
     closes_at: time | None = None
+
+
+class ProcessCalendarRead(OrmRead):
+    process_id: int
+    organization_id: int
+    timezone: str
+    rules: list[OperatingRuleRead]
 
 
 class EmployeeAvailabilityRead(EffectiveWindowRead):

@@ -8,6 +8,7 @@ class Process(Base):
     __tablename__ = "processes"
     __table_args__ = (
         UniqueConstraint("id", "organization_id", "pod_id", name="uq_processes_id_tenant_pod"),
+        UniqueConstraint("id", "organization_id", "pod_id", "brand_id", name="uq_processes_id_tenant_brand_pod"),
         UniqueConstraint("organization_id", "brand_id", "name", name="uq_processes_brand_name"),
         ForeignKeyConstraint(
             ["pod_id", "organization_id"], ["pods.id", "pods.organization_id"],
@@ -33,3 +34,4 @@ class Process(Base):
     day_overrides: Mapped[list["DayOverride"]] = relationship(back_populates="process", cascade="all, delete-orphan", foreign_keys="DayOverride.process_id")
     date_overrides: Mapped[list["DateOverride"]] = relationship(back_populates="process", cascade="all, delete-orphan", foreign_keys="DateOverride.process_id")
     holiday_overrides: Mapped[list["HolidayOverride"]] = relationship(back_populates="process", cascade="all, delete-orphan", foreign_keys="HolidayOverride.process_id")
+    staffing_requirements: Mapped[list["StaffingRequirement"]] = relationship(back_populates="process", foreign_keys="StaffingRequirement.process_id")

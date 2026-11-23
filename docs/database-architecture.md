@@ -20,6 +20,8 @@ erDiagram
   ORGANIZATION ||--o{ HOLIDAY : defines
   HOLIDAY ||--o{ HOLIDAY_OVERRIDE : adjusted_by
   PROCESS ||--o{ HOLIDAY_OVERRIDE : adjusted_for
+  BRAND ||--o{ STAFFING_REQUIREMENT : sets_minimum
+  PROCESS o|--o{ STAFFING_REQUIREMENT : specializes_minimum
   EMPLOYEE ||--o{ EMPLOYEE_AVAILABILITY : available_by
   EMPLOYEE ||--o{ EMPLOYEE_LEAVE : requests
   EMPLOYEE ||--o{ EMPLOYEE_COMP_OFF : earns
@@ -47,6 +49,9 @@ Operating calendars are Process-specific:
 - `DateOverride` stores a one-off Process/date exception.
 - `Holiday` stores an Organization holiday date; `HolidayOverride` defines Process-specific behavior for that holiday.
 - Process `timezone` is an IANA timezone name used to interpret local calendar dates and wall-clock hours.
+- Calendar APIs resolve effective days in this order: one-off date override, Process holiday override (or closed by default on a holiday), recurring weekday override, then recurring operating rule. Unconfigured dates default to closed.
+- `StaffingRequirement` stores a Brand-wide or Process-specific minimum, optionally scoped to a weekday or one date. Process rows are constrained to the same Brand, Pod, and Organization. Effective staffing precedence is Process/date, Brand/date, Process/weekday, Brand/weekday, Process default, then Brand default.
+- Holiday dates are unique per Organization. The staffing migration checks for existing duplicate holiday dates and aborts before DDL if any are found; it does not remove existing holiday records.
 
 Employee availability is independent of operating hours. `EmployeeAvailability` stores a recurring employee weekday availability window. Leave, comp-off grants, and preferences are separate records and do not change a Process operating calendar.
 
@@ -72,7 +77,7 @@ Migration `0001_initial_schema` remains the original organization/employee/shift
 4. Rejects existing assignments whose Employee and Shift belong to different Organizations.
 5. Adds same-tenant composite foreign keys and supporting unique constraints.
 
-The migration test upgrades a populated `0001` SQLite database, verifies the backfill and schema, checks for model/schema drift, downgrades to `0001` while preserving legacy rows, then downgrades to base. SQLite migration connections temporarily disable FK enforcement to support table-rebuild operations and restore enforcement afterward; application connections enable `PRAGMA foreign_keys=ON`.
+Migrations `0003_employee_active_status` and `0004_staffing_requirements` add employee status and minimum staffing rules. The latter also tightens holiday uniqueness to one holiday per Organization/date and adds a Process/Brand composite key for staffing ownership. The migration test upgrades a populated `0001` SQLite database, verifies the backfill and schema, checks for model/schema drift, downgrades to `0001` while preserving legacy rows, then downgrades to base. SQLite migration connections temporarily disable FK enforcement to support table-rebuild operations and restore enforcement afterward; application connections enable `PRAGMA foreign_keys=ON`.
 
 ## PostgreSQL / Supabase
 
