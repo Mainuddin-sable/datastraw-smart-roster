@@ -277,6 +277,61 @@ class StaffingRequirementInput(RequestModel):
         return self
 
 
+class GenerateMonthlyRosterRequest(RequestModel):
+    pod_id: Annotated[int, Field(gt=0)]
+    year: Annotated[int, Field(ge=2000, le=2200)]
+    month: Annotated[int, Field(ge=1, le=12)]
+    process_id: Annotated[int, Field(gt=0)] | None = None
+    solver_time_limit_seconds: Annotated[int, Field(ge=1, le=60)] = 30
+
+
+class GeneratedAssignmentRead(OrmRead):
+    employee_id: int
+    employee_name: str
+    process_id: int
+    process_name: str
+    brand_id: int
+    brand_name: str
+    process_assignment_id: int
+    work_date: date
+    starts_at: datetime
+    ends_at: datetime
+
+
+class GeneratedEmployeeStatusRead(OrmRead):
+    employee_id: int
+    employee_name: str
+    work_date: date
+    status: str
+
+
+class CoverageRead(OrmRead):
+    scope: str
+    work_date: date
+    brand_id: int
+    process_id: int | None = None
+    sequence: int | None = None
+    required: int
+    scheduled: int | None = None
+    uncovered: int | None = None
+    diagnosed: bool = True
+
+
+class MonthlyRosterGenerationRead(OrmRead):
+    success: bool
+    generation_run_id: int
+    roster_id: int | None = None
+    status: str
+    solver_status: str
+    year: int
+    month: int
+    pod_id: int
+    assignments: list[GeneratedAssignmentRead] = Field(default_factory=list)
+    employee_statuses: list[GeneratedEmployeeStatusRead] = Field(default_factory=list)
+    coverage: list[CoverageRead] = Field(default_factory=list)
+    error: str | None = None
+
+
 class StaffingRequirementRead(OrmRead):
     id: int
     organization_id: int

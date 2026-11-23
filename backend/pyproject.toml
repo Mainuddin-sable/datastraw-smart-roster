@@ -12,6 +12,7 @@ dependencies = [
   "alembic>=1.17,<2.0",
   "psycopg[binary]>=3.2,<4.0",
   "pydantic-settings>=2.10,<3.0",
+  "ortools>=9.14,<10.0",
 ]
 
 [project.optional-dependencies]

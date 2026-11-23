@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routers import brands, calendars, employees, organizations, pods, processes, staffing
+from app.api.routers import brands, calendars, employees, organizations, pods, processes, rosters, staffing
 from app.core.config import get_settings
 from app.services.employees import InvalidRelationship
 from app.services.calendars import InvalidCalendarInput
@@ -53,6 +53,7 @@ app.include_router(processes.router)
 app.include_router(employees.router)
 app.include_router(calendars.router)
 app.include_router(staffing.router)
+app.include_router(rosters.router)
 
 
 @app.get("/health", tags=["health"])
