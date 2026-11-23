@@ -39,6 +39,7 @@ def test_upgrade_backfills_legacy_rows_and_downgrade_preserves_them(tmp_path: Pa
     with engine.connect() as connection:
         assert connection.execute(text("SELECT name FROM pods WHERE organization_id=1")).scalar_one() == "Default"
         assert connection.execute(text("SELECT pod_id FROM employees WHERE id=1")).scalar_one() == 1
+        assert connection.execute(text("SELECT is_active FROM employees WHERE id=1")).scalar_one() == 1
         assert connection.execute(text("SELECT organization_id FROM assignments WHERE id=1")).scalar_one() == 1
         assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
         tables = set(inspect(connection).get_table_names())
@@ -55,6 +56,7 @@ def test_upgrade_backfills_legacy_rows_and_downgrade_preserves_them(tmp_path: Pa
         assert "pods" not in tables
         assert connection.execute(text("SELECT email FROM employees WHERE id=1")).scalar_one() == "legacy@example.test"
         assert "pod_id" not in {column["name"] for column in inspect(connection).get_columns("employees")}
+        assert "is_active" not in {column["name"] for column in inspect(connection).get_columns("employees")}
     engine.dispose()
 
     command.downgrade(config, "base")

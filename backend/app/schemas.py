@@ -53,6 +53,91 @@ class ProcessUpdate(ProcessCreate):
     pass
 
 
+EmailAddress = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        to_lower=True,
+        min_length=3,
+        max_length=320,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    ),
+]
+
+
+class EmployeeCreate(RequestModel):
+    pod_id: Annotated[int, Field(gt=0)]
+    full_name: Name
+    email: EmailAddress
+    role: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] | None = None
+    is_active: bool = True
+
+
+class EmployeeUpdate(RequestModel):
+    full_name: Name
+    email: EmailAddress
+    role: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)] | None = None
+    is_active: bool
+
+
+class ProcessAssignmentCreate(RequestModel):
+    process_id: Annotated[int, Field(gt=0)]
+    effective_from: date
+    effective_to: date | None = None
+
+    @model_validator(mode="after")
+    def validate_effective_dates(self):
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to must be on or after effective_from")
+        return self
+
+
+class ProcessAssignmentUpdate(ProcessAssignmentCreate):
+    pass
+
+
+class ProcessAssignmentDeactivate(RequestModel):
+    effective_to: date
+
+
+class EmployeeAvailabilityCreate(RequestModel):
+    day_of_week: Annotated[int, Field(ge=0, le=6)]
+    sequence: Annotated[int, Field(ge=1)] = 1
+    is_available: bool = True
+    available_from: time | None = None
+    available_to: time | None = None
+    effective_from: date
+    effective_to: date | None = None
+
+    @model_validator(mode="after")
+    def validate_availability(self):
+        if self.effective_to is not None and self.effective_to < self.effective_from:
+            raise ValueError("effective_to must be on or after effective_from")
+        if self.is_available:
+            if (self.available_from is None) != (self.available_to is None):
+                raise ValueError("available_from and available_to must be provided together")
+            if self.available_from == self.available_to and self.available_from is not None:
+                raise ValueError("available_from and available_to must differ")
+        elif self.available_from is not None or self.available_to is not None:
+            raise ValueError("unavailable records cannot include availability times")
+        return self
+
+
+class EmployeeAvailabilityUpdate(EmployeeAvailabilityCreate):
+    pass
+
+
+class EmployeeAvailabilityRange(RequestModel):
+    start_date: date
+    end_date: date
+
+    @model_validator(mode="after")
+    def validate_date_range(self):
+        if self.end_date < self.start_date:
+            raise ValueError("end_date must be on or after start_date")
+        return self
+
+
 class EffectiveWindowRead(OrmRead):
     effective_from: date
     effective_to: date | None = None
@@ -90,6 +175,7 @@ class EmployeeRead(OrmRead):
     full_name: str
     email: str
     role: str | None = None
+    is_active: bool
 
 
 class ProcessRead(OrmRead):
@@ -107,6 +193,15 @@ class ProcessAssignmentRead(EffectiveWindowRead):
     pod_id: int
     employee_id: int
     process_id: int
+
+
+class EmployeeEligibleProcessRead(EffectiveWindowRead):
+    id: int
+    employee_id: int
+    process_id: int
+    process_name: str
+    brand_id: int
+    brand_name: str
 
 
 class OperatingRuleRead(EffectiveWindowRead):
@@ -154,6 +249,8 @@ class HolidayOverrideRead(OrmRead):
 
 class EmployeeAvailabilityRead(EffectiveWindowRead):
     id: int
+    organization_id: int
+    pod_id: int
     employee_id: int
     day_of_week: int
     sequence: int

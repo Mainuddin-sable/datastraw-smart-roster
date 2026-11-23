@@ -2,8 +2,9 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routers import brands, organizations, pods, processes
+from app.api.routers import brands, employees, organizations, pods, processes
 from app.core.config import get_settings
+from app.services.employees import InvalidRelationship
 from app.services.organization_structure import ResourceConflict, ResourceNotFound
 
 settings = get_settings()
@@ -34,10 +35,16 @@ async def resource_conflict_handler(request: Request, exc: ResourceConflict) -> 
     return JSONResponse(status_code=409, content={"detail": str(exc)})
 
 
+@app.exception_handler(InvalidRelationship)
+async def invalid_relationship_handler(request: Request, exc: InvalidRelationship) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+
 app.include_router(organizations.router)
 app.include_router(pods.router)
 app.include_router(brands.router)
 app.include_router(processes.router)
+app.include_router(employees.router)
 
 
 @app.get("/health", tags=["health"])
