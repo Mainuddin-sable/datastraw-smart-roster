@@ -84,6 +84,6 @@ https://github.com/Mainuddin-sable/datastraw-smart-roster
 https://www.linkedin.com/in/mainuddin-sable/
 
 ## Approach Note
-See [Approach Note](docs/approach.md).
+See [Approach Note](docs/assessment-approach.md).
 
 See [deployment instructions and the access-control gate](docs/deployment.md). The API uses shared demo HTTP Basic credentials; the application has no role-specific reviewer accounts.
