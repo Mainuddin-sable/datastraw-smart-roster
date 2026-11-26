@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
-from app.schemas import PodCreate, PodRead, PodUpdate
+from app.schemas import PodCreate, PodLeadUpdate, PodRead, PodUpdate
 from app.services import organization_structure as service
 
 router = APIRouter(prefix="/organizations/{organization_id}/pods", tags=["pods"])
@@ -33,3 +33,9 @@ def get_pod(organization_id: int, pod_id: int, db: DbSession):
 def update_pod(organization_id: int, pod_id: int, payload: PodUpdate, db: DbSession):
     """Replace a pod's editable fields."""
     return service.update_pod(db, organization_id, pod_id, payload.name)
+
+
+@router.put("/{pod_id}/lead", response_model=PodRead, responses={404: {"description": "Pod or active employee not found in this organization and Pod"}})
+def set_pod_lead(organization_id: int, pod_id: int, payload: PodLeadUpdate, db: DbSession):
+    """Set or clear the active lead employee for a Pod."""
+    return service.set_pod_lead(db, organization_id, pod_id, payload.employee_id)

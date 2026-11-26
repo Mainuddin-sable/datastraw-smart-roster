@@ -16,15 +16,29 @@ depends_on = None
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    duplicate_holiday_dates = bind.exec_driver_sql(
-        "SELECT COUNT(*) FROM (SELECT organization_id, holiday_date FROM holidays "
-        "GROUP BY organization_id, holiday_date HAVING COUNT(*) > 1) AS duplicate_holiday_dates"
-    ).scalar_one()
-    if duplicate_holiday_dates:
-        raise RuntimeError(
-            "Cannot enforce one holiday per organization and date: duplicate dates already exist."
-        )
+    if op.get_context().as_sql:
+        op.execute(sa.text("""
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM holidays
+                    GROUP BY organization_id, holiday_date
+                    HAVING COUNT(*) > 1
+                ) THEN
+                    RAISE EXCEPTION 'Cannot enforce one holiday per organization and date: duplicate dates already exist.';
+                END IF;
+            END $$;
+        """))
+    else:
+        bind = op.get_bind()
+        duplicate_holiday_dates = bind.exec_driver_sql(
+            "SELECT COUNT(*) FROM (SELECT organization_id, holiday_date FROM holidays "
+            "GROUP BY organization_id, holiday_date HAVING COUNT(*) > 1) AS duplicate_holiday_dates"
+        ).scalar_one()
+        if duplicate_holiday_dates:
+            raise RuntimeError(
+                "Cannot enforce one holiday per organization and date: duplicate dates already exist."
+            )
 
     with op.batch_alter_table("holidays") as batch_op:
         batch_op.drop_constraint("uq_holiday_org_date_name", type_="unique")

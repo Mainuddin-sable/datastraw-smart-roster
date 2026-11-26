@@ -1,3 +1,4 @@
+from io import StringIO
 import sqlite3
 from pathlib import Path
 
@@ -15,6 +16,24 @@ def migration_config(database_path: Path) -> tuple[Config, str]:
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.attributes["database_url"] = database_url
     return config, database_url
+
+
+def test_postgresql_offline_upgrade_renders_data_guards_and_full_schema() -> None:
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.attributes["database_url"] = "postgresql+psycopg://offline:offline@localhost/offline"
+    output = StringIO()
+    config.output_buffer = output
+
+    command.upgrade(config, "head", sql=True)
+
+    sql = output.getvalue()
+    assert sql.count("DO $$") == 2
+    assert "existing assignments cross organizations" in sql
+    assert "duplicate dates already exist" in sql
+    assert "CREATE TABLE staffing_requirements" in sql
+    assert "CREATE UNIQUE INDEX uq_staffing_process_date_override" in sql
+    assert "CREATE TABLE pod_leads" in sql
+    assert "TIMESTAMP WITH TIME ZONE" in sql
 
 
 def test_upgrade_backfills_legacy_rows_and_downgrade_preserves_them(tmp_path: Path) -> None:
@@ -45,6 +64,7 @@ def test_upgrade_backfills_legacy_rows_and_downgrade_preserves_them(tmp_path: Pa
         tables = set(inspect(connection).get_table_names())
         assert "roster_work_assignments" in tables
         assert "generation_runs" in tables
+        assert "pod_leads" in tables
     engine.dispose()
     command.check(config)
 

@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.dependencies import get_db
 from app.db.base import Base
 from app.main import app
+from auth_support import TEST_AUTH_HEADERS
 
 
 @pytest.fixture
@@ -26,7 +27,7 @@ def client() -> Iterator[TestClient]:
 
     app.dependency_overrides[get_db] = override_get_db
     try:
-        with TestClient(app) as test_client:
+        with TestClient(app, headers=TEST_AUTH_HEADERS) as test_client:
             yield test_client
     finally:
         app.dependency_overrides.clear()
@@ -242,6 +243,24 @@ def test_duplicate_names_return_conflict(client: TestClient) -> None:
     process_data = {"brand_id": brand["id"], "name": "Process"}
     assert client.post(f"/organizations/{organization['id']}/processes", json=process_data).status_code == 201
     assert client.post(f"/organizations/{organization['id']}/processes", json=process_data).status_code == 409
+
+
+def test_pod_lead_must_be_active_employee_of_that_pod(client: TestClient) -> None:
+    org = create_organization(client, "Lead Org")
+    pod = client.post(f"/organizations/{org['id']}/pods", json={"name": "Pod A"}).json()
+    other_pod = client.post(f"/organizations/{org['id']}/pods", json={"name": "Pod B"}).json()
+    lead = client.post(f"/organizations/{org['id']}/employees", json={
+        "pod_id": pod["id"], "full_name": "Pod Lead", "email": "lead@example.test",
+    }).json()
+    other = client.post(f"/organizations/{org['id']}/employees", json={
+        "pod_id": other_pod["id"], "full_name": "Other", "email": "other@example.test",
+    }).json()
+
+    assigned = client.put(f"/organizations/{org['id']}/pods/{pod['id']}/lead", json={"employee_id": lead["id"]})
+    assert assigned.status_code == 200
+    assert assigned.json()["lead_employee_id"] == lead["id"]
+    assert client.put(f"/organizations/{org['id']}/pods/{pod['id']}/lead", json={"employee_id": other["id"]}).status_code == 404
+    assert client.put(f"/organizations/{org['id']}/pods/{pod['id']}/lead", json={"employee_id": None}).json()["lead_employee_id"] is None
 
 
 def test_invalid_ids_payloads_and_openapi(client: TestClient) -> None:

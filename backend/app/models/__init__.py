@@ -6,6 +6,7 @@ from app.models.employee_records import EmployeeAvailability, EmployeeCompOff, E
 from app.models.operating_calendar import DateOverride, DayOverride, Holiday, HolidayOverride, OperatingRule
 from app.models.organization import Organization
 from app.models.pod import Pod
+from app.models.pod_lead import PodLead
 from app.models.process import Process
 from app.models.process_assignment import ProcessAssignment
 from app.models.staffing_requirement import StaffingRequirement
@@ -16,6 +17,6 @@ __all__ = [
     "Assignment", "AuditLog", "Brand", "DateOverride", "DayOverride", "Employee",
     "EmployeeAvailability", "EmployeeCompOff", "EmployeeLeave", "EmployeePreference",
     "GenerationRun", "Holiday", "HolidayOverride", "OperatingRule", "Organization", "Pod",
-    "Process", "ProcessAssignment", "Roster", "RosterEntry", "RosterWorkAssignment", "Shift",
+    "PodLead", "Process", "ProcessAssignment", "Roster", "RosterEntry", "RosterWorkAssignment", "Shift",
     "StaffingRequirement",
 ]

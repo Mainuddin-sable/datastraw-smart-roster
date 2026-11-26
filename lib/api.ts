@@ -1,4 +1,13 @@
 const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
+let basicAuthorization: string | null = null;
+
+export function setApiCredentials(username: string, password: string): void {
+  basicAuthorization = `Basic ${btoa(`${username}:${password}`)}`;
+}
+
+export function clearApiCredentials(): void {
+  basicAuthorization = null;
+}
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly payload?: unknown) {
@@ -7,18 +16,27 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, isPublic = false): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
       ...init,
-      headers: { "Content-Type": "application/json", ...init?.headers },
+      headers: {
+        "Content-Type": "application/json",
+        ...(!isPublic && basicAuthorization ? { Authorization: basicAuthorization } : {}),
+        ...init?.headers,
+      },
+      credentials: "omit",
       cache: "no-store",
     });
   } catch {
     throw new ApiError(`Can't reach the roster API at ${API_BASE}. Check that the backend is running.`, 0);
   }
   if (!response.ok) {
+    if (response.status === 401 && !isPublic) {
+      clearApiCredentials();
+      if (typeof window !== "undefined") window.dispatchEvent(new Event("smart-roster:unauthorized"));
+    }
     let detail = `Request failed (${response.status})`;
     let payload: unknown;
     try {
@@ -39,7 +57,7 @@ const json = (method: string, body?: unknown): RequestInit => ({
 });
 
 export interface Organization { id: number; name: string }
-export interface Pod { id: number; organization_id: number; name: string }
+export interface Pod { id: number; organization_id: number; name: string; lead_employee_id: number | null }
 export interface Brand { id: number; organization_id: number; pod_id: number; name: string }
 export interface Process { id: number; organization_id: number; pod_id: number; brand_id: number; name: string; timezone: string }
 export interface Employee { id: number; organization_id: number; pod_id: number; full_name: string; email: string; role: string | null; is_active: boolean }
@@ -70,16 +88,25 @@ export interface Conflict {
   severity: string; message: string; assignment_ids: number[]; replacement_employee_ids: number[];
 }
 export interface Validation { roster_id: number; valid: boolean; conflict_count: number; conflicts: Conflict[] }
+export interface AssignmentCandidates { roster_id: number; assignment_id: number; candidate_employee_ids: number[] }
+export interface EmployeeLeave { id: number; employee_id: number; starts_at: string; ends_at: string; leave_type: string; status: "requested" | "approved" | "rejected" | "cancelled"; reason: string | null }
 export interface EffectiveDay { operating_date: string; is_holiday: boolean; source: string; is_open: boolean; sequence: number; opens_at: string | null; closes_at: string | null; reason: string | null }
 
 export const api = {
-  health: () => request<{ status: string }>("/health"),
+  health: () => request<{ status: string }>("/health", undefined, true),
   organizations: () => request<Organization[]>("/organizations"),
   createOrganization: (name: string) => request<Organization>("/organizations", json("POST", { name })),
   pods: (org: number) => request<Pod[]>(`/organizations/${org}/pods`),
+  setPodLead: (org: number, pod: number, employee: number | null) =>
+    request<Pod>(`/organizations/${org}/pods/${pod}/lead`, json("PUT", { employee_id: employee })),
   brands: (org: number) => request<Brand[]>(`/organizations/${org}/brands`),
   processes: (org: number) => request<Process[]>(`/organizations/${org}/processes`),
   employees: (org: number) => request<Employee[]>(`/organizations/${org}/employees`),
+  leaveRequests: (org: number) => request<EmployeeLeave[]>(`/organizations/${org}/leave-requests`),
+  createLeaveRequest: (org: number, body: { employee_id: number; starts_at: string; ends_at: string; leave_type: string; reason?: string }) =>
+    request<EmployeeLeave>(`/organizations/${org}/leave-requests`, json("POST", body)),
+  updateLeaveRequestStatus: (org: number, leave: number, status: "approved" | "rejected" | "cancelled") =>
+    request<EmployeeLeave>(`/organizations/${org}/leave-requests/${leave}`, json("PATCH", { status })),
   generate: (org: number, body: { pod_id: number; year: number; month: number; process_id?: number; preserve_locks_from_roster_id?: number }) =>
     request<GeneratedRoster>(`/organizations/${org}/rosters/generate`, json("POST", body)),
   latestRoster: (org: number, pod: number, year: number, month: number) =>
@@ -87,6 +114,8 @@ export const api = {
   validate: (org: number, roster: number) => request<Validation>(`/organizations/${org}/rosters/${roster}/validate`, json("POST")),
   revalidate: (org: number, roster: number) => request<Validation>(`/organizations/${org}/rosters/${roster}/revalidate`, json("POST")),
   eligibleProcesses: (org: number, employee: number) => request<EligibleProcess[]>(`/organizations/${org}/employees/${employee}/process-assignments`),
+  assignmentCandidates: (org: number, roster: number, assignment: number) =>
+    request<AssignmentCandidates>(`/organizations/${org}/rosters/${roster}/assignments/${assignment}/candidates`),
   editAssignment: (org: number, roster: number, assignment: number, employee: number, processAssignment: number) =>
     request<{ assignment_id: number }>(`/organizations/${org}/rosters/${roster}/assignments/${assignment}`, json("PUT", { employee_id: employee, process_assignment_id: processAssignment })),
   lockAssignment: (org: number, roster: number, assignment: number, isLocked: boolean) =>

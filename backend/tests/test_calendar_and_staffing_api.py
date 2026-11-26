@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.dependencies import get_db
 from app.db.base import Base
 from app.main import app
+from auth_support import TEST_AUTH_HEADERS
 
 
 @pytest.fixture
@@ -22,7 +23,7 @@ def client() -> Iterator[TestClient]:
 
     app.dependency_overrides[get_db] = override_get_db
     try:
-        with TestClient(app) as test_client:
+        with TestClient(app, headers=TEST_AUTH_HEADERS) as test_client:
             yield test_client
     finally:
         app.dependency_overrides.clear()
@@ -80,6 +81,20 @@ def test_operating_calendar_configures_365_day_operations_timezone_and_closures(
     assert sunday["source"] == "operating_rule"
     assert sunday["is_open"] is False
     assert client.put(endpoint, json={"timezone": "Not/A_Zone", "rules": []}).status_code == 422
+
+
+def test_process_without_calendar_rules_defaults_to_closed(client: TestClient) -> None:
+    org, _, _, process = setup_process(client)
+    endpoint = f"/organizations/{org['id']}/processes/{process['id']}/calendar/effective"
+
+    response = client.get(endpoint, params={"start_date": "2026-04-01", "end_date": "2026-04-01"})
+
+    assert response.status_code == 200
+    assert response.json() == [{
+        "operating_date": "2026-04-01", "is_holiday": False,
+        "source": "closed_default", "is_open": False, "sequence": 1,
+        "opens_at": None, "closes_at": None, "reason": "No operating rule configured",
+    }]
 
 
 def test_weekly_and_date_overrides_precedence_and_effective_range(client: TestClient) -> None:

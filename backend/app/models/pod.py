@@ -20,3 +20,8 @@ class Pod(Base):
     processes: Mapped[list["Process"]] = relationship(back_populates="pod", foreign_keys="Process.pod_id")
     rosters: Mapped[list["Roster"]] = relationship(back_populates="pod", foreign_keys="Roster.pod_id")
     generation_runs: Mapped[list["GenerationRun"]] = relationship(back_populates="pod", foreign_keys="GenerationRun.pod_id")
+    lead: Mapped["PodLead | None"] = relationship(back_populates="pod", cascade="all, delete-orphan", uselist=False)
+
+    @property
+    def lead_employee_id(self) -> int | None:
+        return self.lead.employee_id if self.lead is not None else None

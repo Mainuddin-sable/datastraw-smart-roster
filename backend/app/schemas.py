@@ -1,10 +1,10 @@
 """Pydantic request and response contracts for roster and organization APIs."""
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 
 class OrmRead(BaseModel):
@@ -32,6 +32,10 @@ class PodCreate(RequestModel):
 
 class PodUpdate(PodCreate):
     pass
+
+
+class PodLeadUpdate(RequestModel):
+    employee_id: Annotated[int, Field(gt=0)] | None
 
 
 class BrandCreate(RequestModel):
@@ -333,6 +337,7 @@ class MonthlyRosterGenerationRead(OrmRead):
     assignments: list[GeneratedAssignmentRead] = Field(default_factory=list)
     employee_statuses: list[GeneratedEmployeeStatusRead] = Field(default_factory=list)
     coverage: list[CoverageRead] = Field(default_factory=list)
+    conflicts: list[dict[str, Any]] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -375,6 +380,7 @@ class PodRead(OrmRead):
     id: int
     organization_id: int
     name: str
+    lead_employee_id: int | None = None
 
 
 class BrandRead(OrmRead):
@@ -493,6 +499,35 @@ class EmployeeLeaveRead(OrmRead):
     status: str
     reason: str | None = None
 
+    @field_validator("starts_at", "ends_at")
+    @classmethod
+    def normalize_leave_datetime_to_utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+
+class EmployeeLeaveCreate(RequestModel):
+    employee_id: Annotated[int, Field(gt=0)]
+    starts_at: datetime
+    ends_at: datetime
+    leave_type: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
+    reason: Annotated[str | None, Field(max_length=500)] = None
+
+    @model_validator(mode="after")
+    def validate_leave_interval(self):
+        if self.starts_at.tzinfo is None or self.starts_at.utcoffset() is None:
+            raise ValueError("starts_at must include a timezone offset.")
+        if self.ends_at.tzinfo is None or self.ends_at.utcoffset() is None:
+            raise ValueError("ends_at must include a timezone offset.")
+        if self.ends_at <= self.starts_at:
+            raise ValueError("ends_at must be after starts_at.")
+        return self
+
+
+class EmployeeLeaveStatusUpdate(RequestModel):
+    status: Literal["approved", "rejected", "cancelled"]
+
 
 class EmployeeCompOffRead(OrmRead):
     id: int
@@ -547,6 +582,12 @@ class RosterAssignmentEdit(RequestModel):
     process_assignment_id: Annotated[int, Field(gt=0)]
 
 
+class RosterAssignmentCandidatesRead(OrmRead):
+    roster_id: int
+    assignment_id: int
+    candidate_employee_ids: list[int] = Field(default_factory=list)
+
+
 class RosterAssignmentLock(RequestModel):
     is_locked: bool
 
@@ -557,6 +598,7 @@ class RosterConflictRead(OrmRead):
     employee_ids: list[int] = Field(default_factory=list)
     brand_id: int | None = None
     process_id: int | None = None
+    sequence: int | None = None
     severity: str
     message: str
     assignment_ids: list[int] = Field(default_factory=list)

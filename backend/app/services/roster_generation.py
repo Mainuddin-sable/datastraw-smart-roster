@@ -117,15 +117,14 @@ def _leave_overlaps(
     )
 
 
-def _leave_on_date(leaves: list[EmployeeLeave], employee_id: int, work_date: date) -> bool:
+def _time_off_status(leaves: list[EmployeeLeave], employee_id: int, work_date: date) -> str | None:
     day_start = datetime.combine(work_date, time.min, tzinfo=timezone.utc)
     day_end = day_start + timedelta(days=1)
-    return any(
-        row.employee_id == employee_id
-        and _as_utc(row.starts_at) < day_end
-        and _as_utc(row.ends_at) > day_start
-        for row in leaves
-    )
+    matching = [row for row in leaves if row.employee_id == employee_id
+        and _as_utc(row.starts_at) < day_end and _as_utc(row.ends_at) > day_start]
+    if not matching:
+        return None
+    return "comp_off" if any(row.leave_type == "comp_off" for row in matching) else "leave"
 
 
 def _preference_cost(
@@ -359,6 +358,18 @@ def _serialize_coverage(coverage) -> list[dict]:
     ]
 
 
+def _serialize_conflicts(conflicts: list[dict]) -> list[dict]:
+    return [
+        {
+            **row,
+            "work_date": row["work_date"].isoformat(),
+            "starts_at": row["starts_at"].isoformat() if row.get("starts_at") else None,
+            "ends_at": row["ends_at"].isoformat() if row.get("ends_at") else None,
+        }
+        for row in conflicts
+    ]
+
+
 def get_latest_monthly_roster(session: Session, organization_id: int, pod_id: int, year: int, month: int) -> dict | None:
     """Read the latest persisted roster snapshot for one organization Pod/month."""
     start_date, end_date = _month_bounds(year, month)
@@ -530,6 +541,7 @@ def generate_monthly_roster(
             "assignments": [],
             "employee_statuses": [],
             "coverage": coverage or [],
+            "conflicts": [],
             "error": error,
         }
 
@@ -579,7 +591,7 @@ def generate_monthly_roster(
             work_date = start_date + timedelta(days=offset)
             for employee in employees:
                 blocks = blocks_by_employee_date.get((employee.id, work_date), [])
-                status = "working" if blocks else ("leave" if _leave_on_date(leaves, employee.id, work_date) else "day_off")
+                status = "working" if blocks else (_time_off_status(leaves, employee.id, work_date) or "day_off")
                 entry = RosterEntry(
                     organization_id=organization_id,
                     pod_id=pod_id,
@@ -627,6 +639,45 @@ def generate_monthly_roster(
                 "ends_at": block.ends_at,
                 "is_locked": block.locked,
             })
+
+        # Validate the exact, flushed records that would be committed. If the
+        # independent pass finds a hard conflict, roll back the entire roster
+        # graph and retain only the already committed failed GenerationRun.
+        session.flush()
+        from app.services.roster_validation import validate_roster
+        validation = validate_roster(session, organization_id, roster.id)
+        if not validation["valid"]:
+            conflicts = validation["conflicts"]
+            conflict_summary = "; ".join(row["message"] for row in conflicts[:5])
+            error = f"Generated roster failed independent validation: {conflict_summary}"
+            session.rollback()
+            failed_run = session.get(GenerationRun, run.id)
+            if failed_run is not None:
+                failed_run.status = "failed"
+                failed_run.error_summary = error[:2000]
+                failed_run.result_summary = {
+                    "solver_status": "VALIDATION_FAILED",
+                    "coverage": _serialize_coverage(solution.coverage),
+                    "conflicts": _serialize_conflicts(conflicts),
+                }
+                failed_run.finished_at = datetime.now(timezone.utc)
+                session.commit()
+            return {
+                "success": False,
+                "generation_run_id": run.id,
+                "roster_id": None,
+                "roster_version": None,
+                "status": "validation_failed",
+                "solver_status": "VALIDATION_FAILED",
+                "year": year,
+                "month": month,
+                "pod_id": pod_id,
+                "assignments": [],
+                "employee_statuses": [],
+                "coverage": _serialize_coverage(solution.coverage),
+                "conflicts": conflicts,
+                "error": error,
+            }
         statuses = [
             {
                 "employee_id": employee.id,
@@ -661,6 +712,7 @@ def generate_monthly_roster(
             "assignments": assignments_out,
             "employee_statuses": statuses,
             "coverage": _serialize_coverage(solution.coverage),
+            "conflicts": [],
             "error": None,
         }
     except Exception as exc:

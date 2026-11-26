@@ -26,12 +26,105 @@ def _roster(session: Session, organization_id: int, roster_id: int) -> Roster:
 
 
 def _conflict(kind: str, work_date: date, message: str, *, employee_ids=(), brand_id=None,
-              process_id=None, severity="error", assignment_ids=()) -> dict:
+              process_id=None, sequence=None, severity="error", assignment_ids=(), starts_at=None,
+              ends_at=None) -> dict:
     return {
         "conflict_type": kind, "work_date": work_date, "employee_ids": sorted(set(employee_ids)),
-        "brand_id": brand_id, "process_id": process_id, "severity": severity,
+        "brand_id": brand_id, "process_id": process_id, "sequence": sequence,
+        "starts_at": starts_at, "ends_at": ends_at, "severity": severity,
         "message": message, "assignment_ids": sorted(set(assignment_ids)),
     }
+
+
+def _employees_covering_interval(blocks, entry_by_id, assignment_process, valid_assignment_ids,
+                                 *, work_date: date, process_id: int, starts_at: datetime,
+                                 ends_at: datetime) -> dict[int, set[int]]:
+    """Return assignment rows that continuously cover the complete interval."""
+    intervals_by_employee: dict[int, list[tuple[datetime, datetime, int]]] = {}
+    for block in blocks:
+        if block.id not in valid_assignment_ids or assignment_process[block.id].id != process_id:
+            continue
+        if entry_by_id[block.roster_entry_id].work_date != work_date:
+            continue
+        block_start, block_end = _as_utc(block.starts_at), _as_utc(block.ends_at)
+        clipped_start, clipped_end = max(block_start, starts_at), min(block_end, ends_at)
+        if clipped_start < clipped_end:
+            intervals_by_employee.setdefault(block.employee_id, []).append(
+                (clipped_start, clipped_end, block.id)
+            )
+
+    covered: dict[int, set[int]] = {}
+    for employee_id, intervals in intervals_by_employee.items():
+        cursor = starts_at
+        witness_ids = set()
+        for block_start, block_end, block_id in sorted(intervals):
+            if block_start > cursor:
+                break
+            if block_end > cursor:
+                cursor = block_end
+                witness_ids.add(block_id)
+            if cursor >= ends_at:
+                # The allocator below prevents these rows from being reused
+                # across overlapping sequence demands. Coverage itself only
+                # requires continuous presence through this interval.
+                covered[employee_id] = witness_ids
+                break
+    return covered
+
+
+def _allocate_interval_coverage(intervals: list[dict]) -> list[set[int]]:
+    """Allocate work-block evidence once per employee across overlapping demands."""
+    if not intervals:
+        return []
+
+    requirements = tuple(row["required"] for row in intervals)
+    employee_options: dict[int, list[tuple[int, ...]]] = {}
+    candidates = sorted({employee_id for row in intervals for employee_id in row["witnesses"]})
+    for employee_id in candidates:
+        eligible = [index for index, row in enumerate(intervals)
+                    if employee_id in row["witnesses"]]
+        options: list[tuple[int, ...]] = []
+
+        def build_options(position: int, selected: tuple[int, ...], used_blocks: frozenset[int]) -> None:
+            if position == len(eligible):
+                options.append(selected)
+                return
+            index = eligible[position]
+            build_options(position + 1, selected, used_blocks)
+            row = intervals[index]
+            block_ids = frozenset(row["witnesses"][employee_id])
+            overlaps = any(
+                row["starts_at"] < intervals[other]["ends_at"]
+                and intervals[other]["starts_at"] < row["ends_at"]
+                for other in selected
+            )
+            if not overlaps and not block_ids.intersection(used_blocks):
+                build_options(position + 1, selected + (index,), used_blocks | block_ids)
+
+        build_options(0, (), frozenset())
+        employee_options[employee_id] = options
+
+    # Counts are capped at requirements. Keeping one deterministic allocation
+    # per count vector is sufficient to report whether every demand is met.
+    allocations: dict[tuple[int, ...], tuple[frozenset[int], ...]] = {
+        tuple(0 for _ in intervals): tuple(frozenset() for _ in intervals)
+    }
+    for employee_id in candidates:
+        next_allocations = dict(allocations)
+        for counts, assigned in allocations.items():
+            for option in employee_options[employee_id]:
+                if not option:
+                    continue
+                new_counts = list(counts)
+                new_assigned = list(assigned)
+                for index in option:
+                    new_counts[index] = min(requirements[index], new_counts[index] + 1)
+                    new_assigned[index] = new_assigned[index] | {employee_id}
+                next_allocations.setdefault(tuple(new_counts), tuple(new_assigned))
+        allocations = next_allocations
+
+    best_counts = max(allocations, key=lambda counts: (sum(counts), counts))
+    return [set(employee_ids) for employee_ids in allocations[best_counts]]
 
 
 def validate_roster(session: Session, organization_id: int, roster_id: int) -> dict:
@@ -76,9 +169,14 @@ def validate_roster(session: Session, organization_id: int, roster_id: int) -> d
             conflicts.append(_conflict("ineligible_process", work_date,
                 "Employee process eligibility is not effective on this date.", employee_ids=[assignment.employee_id],
                 brand_id=process.brand_id, process_id=process.id, assignment_ids=[assignment.id]))
-        if _leave_overlaps(leaves, assignment.employee_id, _as_utc(assignment.starts_at), _as_utc(assignment.ends_at)):
+        overlapping_leave = next((row for row in leaves if row.employee_id == assignment.employee_id
+            and _as_utc(row.starts_at) < _as_utc(assignment.ends_at)
+            and _as_utc(row.ends_at) > _as_utc(assignment.starts_at)), None)
+        if overlapping_leave is not None:
             valid_assignment_ids.discard(assignment.id)
-            conflicts.append(_conflict("approved_leave", work_date, "Employee is assigned during approved leave.",
+            is_comp_off = overlapping_leave.leave_type == "comp_off"
+            conflicts.append(_conflict("approved_comp_off" if is_comp_off else "approved_leave", work_date,
+                "Employee is assigned during approved comp-off." if is_comp_off else "Employee is assigned during approved leave.",
                 employee_ids=[assignment.employee_id], brand_id=process.brand_id, process_id=process.id,
                 assignment_ids=[assignment.id]))
         if not _availability_allows(availability, assignment.employee_id, work_date,
@@ -132,49 +230,68 @@ def validate_roster(session: Session, organization_id: int, roster_id: int) -> d
         StaffingRequirement.organization_id == organization_id, StaffingRequirement.pod_id == roster.pod_id)))
     processes = list(session.scalars(select(Process).where(
         Process.organization_id == organization_id, Process.pod_id == roster.pod_id)))
+    brand_open_dates: set[tuple[int, date]] = set()
+    brand_covered_employees: dict[tuple[int, date], set[int]] = {}
     for process in processes:
         rules = get_effective_calendar(session, organization_id, process.id, roster.period_start, roster.period_end)
+        missing_requirement_dates: set[date] = set()
+        intervals_by_date: dict[date, list[dict]] = {}
         for rule in rules:
             if not rule["is_open"]:
                 continue
             day = rule["operating_date"]
+            brand_open_dates.add((process.brand_id, day))
             requirement = _active_requirement(process_rows, day, process_id=process.id)
-            if requirement is None or requirement.minimum_staff <= 0:
-                continue
             start = datetime.combine(day, rule["opens_at"]).replace(tzinfo=ZoneInfo(process.timezone)).astimezone(timezone.utc)
             end_date = day + (timedelta(days=1) if rule["closes_at"] <= rule["opens_at"] else timedelta())
             end = datetime.combine(end_date, rule["closes_at"]).replace(tzinfo=ZoneInfo(process.timezone)).astimezone(timezone.utc)
-            covered = {block.employee_id for block in assignments if block.id in valid_assignment_ids
-                and assignment_process[block.id].id == process.id
-                and entry_by_id[block.roster_entry_id].work_date == day
-                and _as_utc(block.starts_at) < end and _as_utc(block.ends_at) > start}
-            if len(covered) < requirement.minimum_staff:
-                conflicts.append(_conflict("process_coverage_gap", day,
-                    f"Process requires {requirement.minimum_staff} employee(s); {len(covered)} are assigned.",
-                    employee_ids=covered, brand_id=process.brand_id, process_id=process.id))
+            witnesses = _employees_covering_interval(
+                assignments, entry_by_id, assignment_process, valid_assignment_ids,
+                work_date=day, process_id=process.id, starts_at=start, ends_at=end,
+            )
+            brand_covered_employees.setdefault((process.brand_id, day), set()).update(witnesses)
+            if requirement is None:
+                if day not in missing_requirement_dates:
+                    conflicts.append(_conflict(
+                        "missing_staffing_requirement", day,
+                        f"Open Process {process.name!r} (ID {process.id}) has no applicable staffing requirement on {day.isoformat()}.",
+                        brand_id=process.brand_id, process_id=process.id,
+                    ))
+                    missing_requirement_dates.add(day)
+                continue
+            if requirement.minimum_staff <= 0:
+                continue
+            intervals_by_date.setdefault(day, []).append({
+                "sequence": rule["sequence"], "starts_at": start, "ends_at": end,
+                "required": requirement.minimum_staff, "witnesses": witnesses,
+            })
+
+        for day, intervals in intervals_by_date.items():
+            allocated = _allocate_interval_coverage(intervals)
+            for interval, covered in zip(intervals, allocated):
+                if len(covered) < interval["required"]:
+                    sequence = interval["sequence"]
+                    start, end = interval["starts_at"], interval["ends_at"]
+                    conflicts.append(_conflict(
+                        "process_coverage_gap", day,
+                        f"Process requires {interval['required']} employee(s) for the full operating interval; {len(covered)} cover it.",
+                        employee_ids=covered, brand_id=process.brand_id, process_id=process.id,
+                        sequence=sequence, starts_at=start, ends_at=end,
+                    ))
 
     # Brand minima count unique employees across all process assignments for that Brand/date.
-    brands_seen = {(assignment_process[row.id].brand_id, entry_by_id[row.roster_entry_id].work_date) for row in assignments}
     from app.models import Brand
     brands = list(session.scalars(select(Brand).where(Brand.organization_id == organization_id, Brand.pod_id == roster.pod_id)))
     for brand in brands:
-        for offset in range((roster.period_end - roster.period_start).days + 1):
-            day = roster.period_start + timedelta(days=offset)
-            if not any(pid_brand == brand.id and work_day == day for pid_brand, work_day in brands_seen):
-                # Closed dates have no obligation; an open Process in the Brand activates it.
-                brand_processes = [p for p in processes if p.brand_id == brand.id]
-                if not any(any(r["is_open"] and r["operating_date"] == day for r in get_effective_calendar(
-                    session, organization_id, p.id, day, day)) for p in brand_processes):
-                    continue
+        days = sorted(day for brand_id, day in brand_open_dates if brand_id == brand.id)
+        for day in days:
             requirement = _active_requirement(
                 [row for row in process_rows if row.brand_id == brand.id and row.process_id is None],
                 day, process_id=None,
             )
             if requirement is None or requirement.brand_id != brand.id or requirement.minimum_staff <= 0:
                 continue
-            covered = {block.employee_id for block in assignments if block.id in valid_assignment_ids
-                and assignment_process[block.id].brand_id == brand.id
-                and entry_by_id[block.roster_entry_id].work_date == day}
+            covered = brand_covered_employees.get((brand.id, day), set())
             if len(covered) < requirement.minimum_staff:
                 conflicts.append(_conflict("brand_coverage_gap", day,
                     f"Brand requires {requirement.minimum_staff} employee(s); {len(covered)} are assigned.",
@@ -182,13 +299,13 @@ def validate_roster(session: Session, organization_id: int, roster_id: int) -> d
 
     for conflict in conflicts:
         conflict["replacement_employee_ids"] = _replacement_candidates(
-            session, roster, conflict, assignments, assignment_process, entry_by_id, availability, leaves
+            session, roster, conflict, assignments, entry_by_id, availability, leaves
         ) if conflict["conflict_type"] in {"process_coverage_gap", "brand_coverage_gap"} else []
     return {"roster_id": roster.id, "valid": not conflicts, "conflicts": conflicts,
             "conflict_count": len(conflicts)}
 
 
-def _replacement_candidates(session, roster, conflict, assignments, assignment_process, entry_by_id, availability, leaves):
+def _replacement_candidates(session, roster, conflict, assignments, entry_by_id, availability, leaves):
     day = conflict["work_date"]
     processes = list(session.scalars(select(Process).where(
         Process.organization_id == roster.organization_id, Process.pod_id == roster.pod_id,
@@ -208,6 +325,12 @@ def _replacement_candidates(session, roster, conflict, assignments, assignment_p
             start = datetime.combine(day, rule["opens_at"]).replace(tzinfo=tz).astimezone(timezone.utc)
             end_date = day + (timedelta(days=1) if rule["closes_at"] <= rule["opens_at"] else timedelta())
             end = datetime.combine(end_date, rule["closes_at"]).replace(tzinfo=tz).astimezone(timezone.utc)
+            expected_start = conflict.get("starts_at")
+            expected_end = conflict.get("ends_at")
+            if expected_start is not None and _as_utc(expected_start) != start:
+                continue
+            if expected_end is not None and _as_utc(expected_end) != end:
+                continue
             for employee in employees:
                 eligible = session.scalar(select(ProcessAssignment.id).where(
                     ProcessAssignment.organization_id == roster.organization_id,
@@ -225,7 +348,6 @@ def _replacement_candidates(session, roster, conflict, assignments, assignment_p
                 for block in assignments:
                     if block.employee_id != employee.id:
                         continue
-                    block_process = assignment_process[block.id]
                     if entry_by_id[block.roster_entry_id].work_date != day:
                         continue
                     if _as_utc(block.starts_at) < end and _as_utc(block.ends_at) > start:
@@ -234,6 +356,52 @@ def _replacement_candidates(session, roster, conflict, assignments, assignment_p
                 if not conflicts_with_existing:
                     suggested.add(employee.id)
     return sorted(suggested)
+
+
+def get_assignment_candidates(session: Session, organization_id: int, roster_id: int,
+                              assignment_id: int) -> dict:
+    """Return same-Pod employees who can take this block under current hard rules."""
+    roster = _roster(session, organization_id, roster_id)
+    entries = roster.entries
+    entry_by_id = {entry.id: entry for entry in entries}
+    assignments = [item for entry in entries for item in entry.work_assignments]
+    target = next((item for item in assignments if item.id == assignment_id), None)
+    if target is None:
+        raise ResourceNotFound("Roster assignment not found in this roster.")
+
+    assignment_process = {item.id: item.process_assignment.process for item in assignments}
+    process = assignment_process[target.id]
+    work_date = entry_by_id[target.roster_entry_id].work_date
+    availability = list(session.scalars(select(EmployeeAvailability).where(
+        EmployeeAvailability.organization_id == organization_id,
+        EmployeeAvailability.pod_id == roster.pod_id,
+    )))
+    leaves = list(session.scalars(select(EmployeeLeave).where(
+        EmployeeLeave.organization_id == organization_id,
+        EmployeeLeave.pod_id == roster.pod_id,
+        EmployeeLeave.status == "approved",
+    )))
+    candidates = _replacement_candidates(
+        session,
+        roster,
+        {
+            "work_date": work_date,
+            "brand_id": process.brand_id,
+            "process_id": process.id,
+            "starts_at": target.starts_at,
+            "ends_at": target.ends_at,
+        },
+        [item for item in assignments if item.id != target.id],
+        entry_by_id,
+        availability,
+        leaves,
+    )
+    return {
+        "roster_id": roster.id,
+        "assignment_id": target.id,
+        "candidate_employee_ids": [employee_id for employee_id in candidates
+                                   if employee_id != target.employee_id],
+    }
 
 
 def edit_assignment(session: Session, organization_id: int, roster_id: int, assignment_id: int,

@@ -301,6 +301,7 @@ def delete_holiday_override(session: Session, organization_id: int, process_id: 
 
 
 def get_effective_calendar(session: Session, organization_id: int, process_id: int, start_date: date, end_date: date) -> list[dict]:
+    """Resolve effective operating intervals; absent rules intentionally default closed."""
     process = _process(session, organization_id, process_id)
     holidays = list(session.scalars(select(Holiday).where(Holiday.organization_id == organization_id, Holiday.holiday_date >= start_date, Holiday.holiday_date <= end_date)))
     holiday_by_date = {row.holiday_date: row for row in holidays}

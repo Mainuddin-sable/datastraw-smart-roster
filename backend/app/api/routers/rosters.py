@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
 from app.schemas import (
-    GenerateMonthlyRosterRequest, MonthlyRosterGenerationRead, RosterAssignmentEdit,
+    GenerateMonthlyRosterRequest, MonthlyRosterGenerationRead, RosterAssignmentCandidatesRead, RosterAssignmentEdit,
     RosterAssignmentLock, RosterValidationRead,
 )
 from app.services import roster_generation as service
@@ -75,6 +75,7 @@ def generate_monthly_roster(
         return result
     status_code = {
         "infeasible": status.HTTP_409_CONFLICT,
+        "validation_failed": status.HTTP_409_CONFLICT,
         "unknown": status.HTTP_503_SERVICE_UNAVAILABLE,
     }.get(result["status"], 422)
     return JSONResponse(status_code=status_code, content=jsonable_encoder(result))
@@ -92,6 +93,23 @@ def validate_saved_roster(organization_id: OrgId, roster_id: Annotated[int, Path
 def revalidate_roster(organization_id: OrgId, roster_id: Annotated[int, Path(gt=0)], db: DbSession):
     """Recheck a saved roster after availability, leave or other source data changed."""
     return validate_saved_roster(organization_id, roster_id, db)
+
+
+@router.get("/{roster_id}/assignments/{assignment_id}/candidates",
+            response_model=RosterAssignmentCandidatesRead)
+def get_assignment_candidates(
+    organization_id: OrgId,
+    roster_id: Annotated[int, Path(gt=0)],
+    assignment_id: Annotated[int, Path(gt=0)],
+    db: DbSession,
+):
+    """List eligible, available same-Pod replacements for one saved work block."""
+    try:
+        return roster_validation.get_assignment_candidates(
+            db, organization_id, roster_id, assignment_id,
+        )
+    except ResourceNotFound as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @router.put("/{roster_id}/assignments/{assignment_id}", status_code=200)

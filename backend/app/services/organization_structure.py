@@ -2,7 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Brand, Organization, Pod, Process
+from app.models import Brand, Employee, Organization, Pod, PodLead, Process
 
 
 class ResourceNotFound(Exception):
@@ -129,6 +129,32 @@ def update_pod(session: Session, organization_id: int, pod_id: int, name: str) -
         raise DuplicateResource("A pod with this name already exists in the organization.")
     pod.name = name
     return _save(session, pod, "A pod with this name already exists in the organization.")
+
+
+def set_pod_lead(session: Session, organization_id: int, pod_id: int, employee_id: int | None) -> Pod:
+    pod = _pod(session, organization_id, pod_id)
+    current = session.get(PodLead, pod_id)
+    if employee_id is not None:
+        employee = session.scalar(select(Employee).where(
+            Employee.id == employee_id,
+            Employee.organization_id == organization_id,
+            Employee.pod_id == pod_id,
+            Employee.is_active.is_(True),
+        ))
+        if employee is None:
+            raise ResourceNotFound("Active lead employee not found in this Pod.")
+        if current is None:
+            current = PodLead(pod_id=pod_id, organization_id=organization_id, employee_id=employee_id)
+            session.add(current)
+        else:
+            current.employee_id = employee_id
+    elif current is not None:
+        session.delete(current)
+    if employee_id is None:
+        session.commit()
+        session.refresh(pod)
+        return pod
+    return _save(session, pod)
 
 
 def list_brands(session: Session, organization_id: int) -> list[Brand]:

@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.dependencies import get_db
 from app.db.base import Base
 from app.main import app
+from auth_support import TEST_AUTH_HEADERS
 
 
 @pytest.fixture
@@ -24,7 +25,7 @@ def client() -> Iterator[TestClient]:
 
     app.dependency_overrides[get_db] = override_get_db
     try:
-        with TestClient(app) as test_client:
+        with TestClient(app, headers=TEST_AUTH_HEADERS) as test_client:
             yield test_client
     finally:
         app.dependency_overrides.clear()
